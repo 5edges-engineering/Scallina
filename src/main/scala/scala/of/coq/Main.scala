@@ -9,7 +9,7 @@ import scala.of.coq.parsercombinators.compiler.Currify
 
 object Main {
   val usage = """
-    Usage: scala target/scala-2.11/scallina-assembly-<scallina-version>.jar [--uncurrify] [--exact-numerics] [--native-full-constructors] [--source] [--trim] [--ast] [--lexer] [--coq] <coq-source-file-1.v> ... <coq-source-file-n.v>
+    Usage: scala target/scala-2.11/scallina-assembly-<scallina-version>.jar [--uncurrify] [--exact-numerics] [--native-full-constructors] [--omit-peano-import] [--source] [--trim] [--ast] [--lexer] [--coq] <coq-source-file-1.v> ... <coq-source-file-n.v>
   """
 
   def printUsageAndExit(exitCode: Int) = {
@@ -31,6 +31,7 @@ object Main {
         case "--uncurrify" :: tail => nextArgument(optionMap ++ Map('uncurrify -> true), fileNamesAcc, tail)
         case "--exact-numerics" :: tail => nextArgument(optionMap ++ Map('exactNumerics -> true), fileNamesAcc, tail)
         case "--native-full-constructors" :: tail => nextArgument(optionMap ++ Map('nativeFullConstructors -> true), fileNamesAcc, tail)
+        case "--omit-peano-import" :: tail => nextArgument(optionMap ++ Map('omitPeanoImport -> true), fileNamesAcc, tail)
         case fileName :: tail      => nextArgument(optionMap, fileName :: fileNamesAcc, tail)
         case Nil                   => (optionMap, fileNamesAcc)
       }
@@ -75,7 +76,8 @@ object Main {
                 else
                   Currify,
                 exactNumerics = map('exactNumerics),
-                nativeFullConstructors = map('nativeFullConstructors)
+                nativeFullConstructors = map('nativeFullConstructors),
+                omitPeanoImport = map('omitPeanoImport)
               )
               scalaOfCoq.createObjectFileCode(
                 fileName.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf("."))

@@ -76,13 +76,15 @@ import scala.of.coq.parsercombinators.parser.SetCommand
 
 // TODO(Joseph Bakouny) restrict generics using Set instead of Type
 class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, exactNumerics: Boolean = false,
-                 nativeFullConstructors: Boolean = false) {
+                 nativeFullConstructors: Boolean = false, omitPeanoImport: Boolean = false) {
   require(!nativeFullConstructors || curryingStrategy == Currify,
     "Native full constructors require curried functions")
+  require(!omitPeanoImport || exactNumerics,
+    "Omitting the Peano import requires exact numerics")
 
   def createObjectFileCode(objectName: String): String = {
     "import scala.of.coq.lang._\n" +
-      "import Nat._\n" +
+      (if (omitPeanoImport) "" else "import Nat._\n") +
       "import Pairs._\n" +
       "import Bools._\n" +
       "import MoreLists._\n" +

@@ -32,3 +32,5 @@ The generated files can be compiled with the ```scalac``` Scala compiler provide
 For a practical example, see the ```compile-scala-code.sh``` script in [```packaged-examples/v0.7.0/SelectionSort```](./packaged-examples/v0.7.0/SelectionSort).
 
 The source code of the Scallina Standard Library is available under [```src/main/resources/scala/of/coq/lang```](./src/main/resources/scala/of/coq/lang/).
+
+With `--exact-numerics`, `--omit-peano-import` removes the generated `import Nat._` line. Use it only when the generated program compiles without the Peano `Nat` helper; the option does not rewrite uses of that helper or remove other runtime dependencies. The default output is unchanged.

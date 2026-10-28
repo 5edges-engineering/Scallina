@@ -7,6 +7,33 @@ import scala.of.coq.parsercombinators.compiler.ScalaOfCoq
 import scala.of.coq.parsercombinators.parser.CoqParser
 
 class ExactNumericCodegenTest extends FunSuite {
+  test("optional Peano import omission is parsed explicitly") {
+    val (options, files) = scala.of.coq.Main.parseCommandLineArgs(
+      List("--exact-numerics", "--omit-peano-import", "Example.v"))
+    assert(options('exactNumerics))
+    assert(options('omitPeanoImport))
+    assert(files == List("Example.v"))
+  }
+
+  test("exact numeric output can omit Peano import without changing generated definitions") {
+    val source = "Definition add_nat (left right : nat) : nat := (left + right)%nat."
+    val trees = CoqParser(source).get
+    val default = new ScalaOfCoq(trees, Currify, exactNumerics = true)
+      .createObjectFileCode("Example")
+    val minimal = new ScalaOfCoq(trees, Currify, exactNumerics = true,
+      omitPeanoImport = true).createObjectFileCode("Example")
+    assert(default.contains("import Nat._\n"))
+    assert(!minimal.contains("import Nat._\n"))
+    assert(default.replace("import Nat._\n", "") == minimal)
+  }
+
+  test("Peano import omission requires exact numerics") {
+    intercept[IllegalArgumentException] {
+      new ScalaOfCoq(CoqParser("Definition zero : nat := 0.").get,
+        Currify, omitPeanoImport = true)
+    }
+  }
+
   private def generate(source: String): String =
     new ScalaOfCoq(CoqParser(source).get, NoCurrying, exactNumerics = true).generateScalaCode
 
