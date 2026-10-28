@@ -104,6 +104,11 @@ class ScalaOfCoqUncurrifiedTest extends FunSuite {
       generateScalaCode("def f(a: A) = 3")
   }
 
+  test("""Testing exact generation of a numeral larger than Int.MaxValue""") {
+    CoqParser("Definition max_u64 : N := 18446744073709551615.") should
+      generateScalaCode("def max_u64: N = BigInt(\"18446744073709551615\")")
+  }
+
   test("""Testing Scala conversion of "Definition f(l : list bool) := 3." """) {
     CoqParser("Definition f(l : list bool) := 3.") should
       generateScalaCode("def f(l: List[Boolean]) = 3")
