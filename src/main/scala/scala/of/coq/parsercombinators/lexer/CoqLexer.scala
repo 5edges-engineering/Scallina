@@ -61,7 +61,7 @@ object CoqLexer extends StdLexical {
       | failure("illegal character"))
 
   private def identifier: Parser[Token] = {
-    identChar ~ ((identChar | digit) *) ^^ { case first ~ rest => processIdent(first :: rest mkString "") }
+    identChar ~ ((identChar | digit | elem('\'')) *) ^^ { case first ~ rest => processIdent(first :: rest mkString "") }
   }
 
   /*
@@ -212,6 +212,7 @@ object CoqLexer extends StdLexical {
   reserved += "Export"
   reserved += "Load"
   reserved += "Arguments"
+  reserved += "Notation"
   reserved += "Local"
   reserved += "Open"
   reserved += "Close"

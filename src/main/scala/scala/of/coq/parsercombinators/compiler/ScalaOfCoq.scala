@@ -7,6 +7,10 @@ import treehuggerDSL._
 import scala.of.coq.parsercombinators.parser.Argument
 import scala.of.coq.parsercombinators.parser.BetweenParenthesis
 import scala.of.coq.parsercombinators.parser.Binders
+import scala.of.coq.parsercombinators.parser.BindNotationCommand
+import scala.of.coq.parsercombinators.parser.BindNotationUse
+import scala.of.coq.parsercombinators.parser.ListLiteral
+import scala.of.coq.parsercombinators.parser.ListPattern
 import scala.of.coq.parsercombinators.parser.CoqAST
 import scala.of.coq.parsercombinators.parser.Definition
 import scala.of.coq.parsercombinators.parser.FixBody
@@ -22,6 +26,7 @@ import scala.of.coq.parsercombinators.parser.Number
 import scala.of.coq.parsercombinators.parser.Qualid
 import scala.of.coq.parsercombinators.parser.Term
 import scala.of.coq.parsercombinators.parser.Term_->
+import scala.of.coq.parsercombinators.parser.Term_%
 import scala.of.coq.parsercombinators.parser.UncurriedTermApplication
 import scala.of.coq.parsercombinators.parser.Match
 import scala.of.coq.parsercombinators.parser.PatternEquation
@@ -70,7 +75,10 @@ import scala.of.coq.parsercombinators.parser.Set
 import scala.of.coq.parsercombinators.parser.SetCommand
 
 // TODO(Joseph Bakouny) restrict generics using Set instead of Type
-class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
+class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, exactNumerics: Boolean = false,
+                 nativeFullConstructors: Boolean = false) {
+  require(!nativeFullConstructors || curryingStrategy == Currify,
+    "Native full constructors require curried functions")
 
   def createObjectFileCode(objectName: String): String = {
     "import scala.of.coq.lang._\n" +
@@ -90,13 +98,141 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
   def generateScalaCode: String = toTreeHuggerAst(coqTrees).map(treeToString(_)).mkString("\n")
 
   private val constructorToRecordTypeFields = computeConstructorToRecordTypeFields(coqTrees)
+  private val localConstructorNames = coqTrees.collect {
+    case Inductive(InductiveBody(_, _, _, items)) => items.map(_.id.name)
+  }.flatten.toSet
+  private val localTypeNames = coqTrees.collect {
+    case Inductive(InductiveBody(Ident(name), _, _, _)) => name
+    case Record(_, Ident(name), _, _, _, _) => name
+  }.toSet
+  private val caseInsensitiveTypeRenames: Map[String, String] = {
+    val inductiveNames = coqTrees.collect {
+      case Inductive(InductiveBody(Ident(name), _, _, _)) => name
+    }
+    def folded(name: String): String = name.toLowerCase(java.util.Locale.ROOT)
+    val occupied = scala.collection.mutable.Set.empty[String] ++
+      (localTypeNames ++ localConstructorNames).map(folded)
+    inductiveNames.sorted.filter(name => localConstructorNames.exists(c => folded(c) == folded(name))).map { name =>
+      val base = name + "_type"
+      val renamed = Iterator.from(0).map(i => if (i == 0) base else base + i)
+        .find(candidate => !occupied.contains(folded(candidate))).get
+      occupied += folded(renamed)
+      name -> renamed
+    }.toMap
+  }
+  private val localConstructorValueArity = coqTrees.collect {
+    case Inductive(InductiveBody(_, _, _, items)) => items.map { item =>
+      val count = item.binders match {
+        case Some(Binders(binders)) => binders.map {
+          case ExplicitSimpleBinder(_) => 1
+          case ExplicitBinderWithType(names, _) => names.size
+          case ImplicitBinder(_, _) => 0
+        }.sum
+        case None =>
+          def arrowCount(term: Term): Int = term match {
+            case Term_->(_, result) => 1 + arrowCount(result)
+            case _ => 0
+          }
+          item.typeTerm.fold(0)(arrowCount)
+      }
+      item.id.name -> count
+    }
+  }.flatten.toMap
+  private val localRecordProjectionNames = coqTrees.collect {
+    case Record(_, _, _, _, _, fields) => fields.collect {
+      case AbstractRecordField(Name(Some(Ident(name))), None, _) => name
+      case ConcreteRecordField(Name(Some(Ident(name))), None, _, _) => name
+    }
+  }.flatten.toSet
+  private val locallyDefinedNames = coqTrees.collect {
+    case Definition(Ident(name), _, _, _) => name
+    case Fixpoint(FixBody(Ident(name), _, _, _, _)) => name
+    case FunctionDef(FunctionBody(Ident(name), _, _, _, _)) => name
+  }.toSet
+  private def isStdlibImport(module: Qualid, fromPrefix: Option[Qualid], name: String): Boolean =
+    module.idents.map(_.name) == List(name) &&
+      fromPrefix.exists(prefix => List(List("Stdlib"), List("Coq")).contains(prefix.idents.map(_.name)))
+  private def importsStdlib(name: String): Boolean = coqTrees.exists {
+    case RequireImport(module, _, fromPrefix) => isStdlibImport(module, fromPrefix, name)
+    case RequireImports(modules, _, fromPrefix) => modules.exists(isStdlibImport(_, fromPrefix, name))
+    case _ => false
+  }
+  private val importsStdlibList = importsStdlib("List")
+  private val importsStdlibPeanoNat = importsStdlib("PeanoNat")
+  private val importsStdlibNArith = importsStdlib("NArith")
+  private val importsStdlibZArith = importsStdlib("ZArith")
+  private var bindNotationAvailable = false
+  private var listNotationAvailable = false
+  private var activeNumericScope: Option[String] = None
+  private var explicitNumericScope: Option[String] = None
+  private var ignoredBinderCounter = 0
+  private lazy val sourceIdentifiers = coqTrees.map(_.toCoqCode).mkString("\n")
+  private lazy val primedScalaNames: Map[String, String] = {
+    val sourceNames = """[\p{L}_][\p{L}\p{N}_']*""".r.findAllIn(sourceIdentifiers).toSet
+    var assigned = scala.collection.immutable.Set.empty[String]
+    sourceNames.filter(_.contains("'")).toList.sorted.map { sourceName =>
+      val stem = "scallinaPrime_" + sourceName.replace("'", "_prime")
+      var candidate = stem
+      var suffix = 0
+      while (sourceIdentifiers.contains(candidate) || assigned.contains(candidate)) {
+        suffix += 1
+        candidate = stem + suffix
+      }
+      assigned += candidate
+      sourceName -> candidate
+    }.toMap
+  }
+  private def nextIgnoredBinderName(): String = {
+    var candidate = ""
+    do {
+      ignoredBinderCounter += 1
+      candidate = "scallinaIgnoredArg" + ignoredBinderCounter
+    } while (sourceIdentifiers.contains(candidate))
+    candidate
+  }
+  private def effectiveNumericScope: Option[String] = explicitNumericScope.orElse(activeNumericScope)
+  private def withinNumericScope[A](scope: String)(body: => A): A = {
+    val previous = explicitNumericScope
+    explicitNumericScope = Some(scope)
+    try body finally explicitNumericScope = previous
+  }
+  private val hasLocalListDefinition = coqTrees.exists {
+    case Definition(Ident("list"), _, _, _) => true
+    case Fixpoint(FixBody(Ident("list"), _, _, _, _)) => true
+    case Inductive(InductiveBody(Ident("list"), _, _, _)) => true
+    case _ => false
+  }
 
-  private def toTreeHuggerAst(coqTrees: List[Sentence]): List[Tree] = coqTrees.flatMap(t => toTreeHuggerAst(t))
+  private def toTreeHuggerAst(coqTrees: List[Sentence]): List[Tree] = {
+    bindNotationAvailable = false
+    listNotationAvailable = false
+    activeNumericScope = None
+    explicitNumericScope = None
+    ignoredBinderCounter = 0
+    coqTrees.flatMap(t => toTreeHuggerAst(t))
+  }
 
   private def toTreeHuggerAst(coqAst: Sentence): List[Tree] = coqAst match {
-    case RequireImport(_, _, _) | RequireImports(_, _, _) | ModuleImport(_) | LoadCommand(_) | ArgumentsCommand(_, _) | ScopeCommand(_, _, _) | SetCommand(_) =>
+    case BindNotationCommand =>
+      bindNotationAvailable = true
+      List()
+    case ModuleImport(moduleNames) =>
+      if (moduleNames.exists(_.toCoqCode == "ListNotations")) listNotationAvailable = true
+      List()
+    case ScopeCommand(scopeName, _, operation) if exactNumerics =>
+      if (scopeName.toCoqCode != "N_scope")
+        throw new IllegalStateException("Exact numeric lowering does not support scope: " + scopeName.toCoqCode)
+      if (operation == "Open") activeNumericScope = Some("N")
+      else if (operation == "Close") activeNumericScope = None
+      else throw new IllegalStateException("Unknown numeric scope operation: " + operation)
+      List()
+    case RequireImport(_, _, _) | RequireImports(_, _, _) | LoadCommand(_) | ArgumentsCommand(_, _) | ScopeCommand(_, _, _) | SetCommand(_) =>
       List() // The above commands do not generate any Scala code
     case Definition(id, binders, Some(Set | Type), bodyTypeTerm) =>
+      List(createTypeAliasDefinition(id, binders) := coqTypeToTreeHuggerType(bodyTypeTerm))
+    case Definition(id, binders, None, bodyTypeTerm @ Term_%(_, Ident("type"))) =>
+      List(createTypeAliasDefinition(id, binders) := coqTypeToTreeHuggerType(bodyTypeTerm))
+    case Definition(id, binders, None, bodyTypeTerm @ UncurriedTermApplication(Qualid(List(Ident("list"))), List(Argument(None, _)))) if !hasLocalListDefinition =>
       List(createTypeAliasDefinition(id, binders) := coqTypeToTreeHuggerType(bodyTypeTerm))
     case Definition(Ident(name), args, Some(recordType), RecordInstantiation(concreteRecordFields)) =>
       List(RecordUtils.convertRecordInstance(name, args, recordType, concreteRecordFields))
@@ -120,17 +256,73 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
   private def termToScalaCode(t: Term): String = treeToString(termToTreeHuggerAst(t))
 
   private def termToTreeHuggerAst(t: Term): Tree = t match {
-    case BetweenParenthesis(UncurriedTermApplication(functionTerm, arguments)) =>
-      createApplication(functionTerm, arguments)
+    case BindNotationUse(variable, received, body) =>
+      if (!bindNotationAvailable)
+        throw new IllegalStateException("Bind notation used before its exact declaration")
+      termToTreeHuggerAst(UncurriedTermApplication(
+        Qualid(List(Ident("bind"))),
+        List(
+          Argument(None, received),
+          Argument(None, Fun(Binders(List(ExplicitSimpleBinder(variable))), body)))))
+    case BetweenParenthesis(application: UncurriedTermApplication) =>
+      termToTreeHuggerAst(application)
     case Fun(binders, bodyTerm) =>
       createAnonymousFunction(binders, bodyTerm)
     case letIn @ (SimpleLetIn(_, _, _, _, _) | LetConstructorArgsIn(_, _, _, _) | LetPatternIn(_, _, _, _)) =>
       BLOCK(blockTermToTreeHuggerAstList(letIn))
     case TermIf(conditionTerm, _, thenTerm, elseTerm) =>
       IF(termToTreeHuggerAst(conditionTerm)).THEN(termToTreeHuggerAst(thenTerm)).ELSE(termToTreeHuggerAst(elseTerm))
+    case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident("div"))), List(Argument(None, numerator), Argument(None, denominator)))
+        if exactNumerics =>
+      createTotalNatDivision(numerator, denominator)
+    case UncurriedTermApplication(Qualid(List(Ident("N"), Ident(conversion @ ("of_nat" | "pos")))),
+        List(Argument(None, value))) if exactNumerics && importsStdlibNArith =>
+      REF("scala.of.coq.exact.ExactN." + (if (conversion == "of_nat") "ofNat" else "pos"))
+        .APPLY(termToTreeHuggerAst(value))
+    case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident(operation @ ("ltb" | "leb" | "eqb")))),
+        List(Argument(None, left), Argument(None, right)))
+        if exactNumerics && importsStdlibPeanoNat =>
+      createInfixOperator(left, operation match {
+        case "ltb" => "<"
+        case "leb" => "<="
+        case "eqb" => "=="
+      }, right)
+    case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident("max"))),
+        List(Argument(None, left), Argument(None, right)))
+        if exactNumerics && importsStdlibPeanoNat =>
+      termToTreeHuggerAst(left).DOT("max").APPLY(termToTreeHuggerAst(right))
+    case UncurriedTermApplication(Qualid(List(Ident("length"))), List(Argument(None, values)))
+        if exactNumerics && importsStdlibList && !locallyDefinedNames.contains("length") =>
+      REF("BigInt").APPLY(termToTreeHuggerAst(values).DOT("length"))
+    case UncurriedTermApplication(Qualid(List(Ident(listPredicate @ ("forallb" | "existsb")))),
+        List(Argument(None, predicate), Argument(None, values)))
+        if exactNumerics && importsStdlibList && !locallyDefinedNames.contains(listPredicate) =>
+      termToTreeHuggerAst(values).DOT(if (listPredicate == "forallb") "forall" else "exists")
+        .APPLY(termToTreeHuggerAst(predicate))
+    case UncurriedTermApplication(Qualid(List(Ident("map"))),
+        List(Argument(None, transform), Argument(None, values)))
+        if exactNumerics && importsStdlibList && !locallyDefinedNames.contains("map") =>
+      termToTreeHuggerAst(values).DOT("map").APPLY(termToTreeHuggerAst(transform))
+    case UncurriedTermApplication(Qualid(List(Ident(fieldName))), List(Argument(None, recordValue)))
+        if exactNumerics && localRecordProjectionNames.contains(fieldName) =>
+      termToTreeHuggerAst(recordValue).DOT(scalaIdentifier(fieldName))
     case UncurriedTermApplication(functionTerm, arguments) =>
       createApplication(functionTerm, arguments)
+    case InfixOperator(leftOp, op @ ("/" | "mod"), Number(divisor))
+        if exactNumerics && effectiveNumericScope.contains("N") && divisor > 0 =>
+      createInfixOperator(leftOp, op, Number(divisor))
+    case InfixOperator(leftOp, "-", rightOp) if exactNumerics &&
+        effectiveNumericScope.exists(scope => scope == "N" || scope == "nat") =>
+      PAREN(createInfixOperator(leftOp, "-", rightOp)).DOT("max").APPLY(REF("BigInt") APPLY LIT("0"))
+    case InfixOperator(leftOp, "-", rightOp) if exactNumerics && effectiveNumericScope.contains("Z") =>
+      createInfixOperator(leftOp, "-", rightOp)
+    case InfixOperator(_, op @ ("-" | "/" | "mod"), _) if exactNumerics =>
+      throw new IllegalStateException("Exact numeric lowering is not defined for operator: " + op)
     case InfixOperator(leftOp, op, rightOp) => createInfixOperator(leftOp, convertToScalaInfixOperator(op), rightOp)
+    case Term_%(term, Ident(scope @ ("N" | "nat" | "Z"))) if exactNumerics =>
+      withinNumericScope(scope)(termToTreeHuggerAst(term))
+    case Term_%(_, Ident(scope)) if exactNumerics =>
+      throw new IllegalStateException("Exact numeric lowering does not support term scope: " + scope)
     // TODO(Joseph Bakouny): Check if the return type of the match should always be ignored
     case patternMatch @ Match(_, None, _) =>
       PatternUtils.convertPatternMatch(patternMatch)
@@ -138,11 +330,36 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
       createFieldSelection(recordInstance, fieldName)
     case Qualid(List(Ident(primitiveValue))) if qualidIsPrimitiveValueInScala(primitiveValue) =>
       convertQualitToPrimitiveValue(primitiveValue)
+    case Qualid(List(Ident("tt"))) if exactNumerics &&
+        !localConstructorNames.contains("tt") && !locallyDefinedNames.contains("tt") =>
+      REF("()")
+    case Qualid(List(Ident(zero @ "Z0"))) if exactNumerics && importsStdlibZArith &&
+        !localConstructorNames.contains(zero) && !locallyDefinedNames.contains(zero) =>
+      REF("scala.of.coq.exact.ExactZ.Z0")
+    case Qualid(List(Ident(signed @ ("Zpos" | "Zneg")))) if exactNumerics && importsStdlibZArith &&
+        !localConstructorNames.contains(signed) && !locallyDefinedNames.contains(signed) =>
+      REF("scala.of.coq.exact.ExactZ." + signed)
+    case Qualid(List(Ident(natural @ ("N0" | "Npos")))) if exactNumerics && importsStdlibNArith &&
+        !localConstructorNames.contains(natural) && !locallyDefinedNames.contains(natural) =>
+      REF("scala.of.coq.exact.ExactN." + natural)
+    case Qualid(List(Ident(binary @ ("xH" | "xO" | "xI")))) if exactNumerics && importsStdlibNArith &&
+        !localConstructorNames.contains(binary) && !locallyDefinedNames.contains(binary) =>
+      REF("scala.of.coq.exact.ExactPositive." + binary)
+    case Qualid(List(Ident(natConstructor @ ("O" | "S")))) if exactNumerics =>
+      if (localConstructorNames.contains(natConstructor))
+        throw new IllegalStateException("Exact natural constructor is shadowed locally: " + natConstructor)
+      REF("scala.of.coq.exact.ExactNat." + natConstructor)
     case Qualid(xs) =>
       REF(xs.map { case Ident(name) => convertValue(name) }.mkString("."))
+    case Number(n) if exactNumerics => REF("BigInt") APPLY LIT(n.toString)
     case Number(n) =>
       if (n.isValidInt) LIT(n.toInt)
       else REF("BigInt") APPLY LIT(n.toString)
+    case ListLiteral(elements) =>
+      if (!listNotationAvailable)
+        throw new IllegalStateException("List notation used before importing ListNotations")
+      if (elements.isEmpty) REF("Nil")
+      else REF("List").APPLY(elements.map(termToTreeHuggerAst))
     case BetweenParenthesis(term) =>
       PAREN(termToTreeHuggerAst(term))
     case TupleValue(tupleTerms) =>
@@ -154,7 +371,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
   private def blockTermToTreeHuggerAstList(term: Term): List[Tree] = term match {
     case SimpleLetIn(Ident(id), binders, typeTerm, inputTerm, mainTerm) =>
       (
-        typeTerm.fold(VAL(id))(t => VAL(id, coqTypeToTreeHuggerType(t))) :=
+        typeTerm.fold(VAL(scalaIdentifier(id)))(t => VAL(scalaIdentifier(id), coqTypeToTreeHuggerType(t))) :=
         binders.fold(termToTreeHuggerAst(inputTerm))(createAnonymousFunction(_, inputTerm))) :: blockTermToTreeHuggerAstList(mainTerm)
     case LetConstructorArgsIn(names, _, inputTerm, mainTerm) =>
       // TODO(Joseph Bakouny): consider supporting inductives with one constructor that are not tuples
@@ -172,6 +389,8 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
   private def coqTypeToScalaCode(typeTerm: Term): String = treeToString(coqTypeToTreeHuggerType(typeTerm))
 
   private def coqTypeToTreeHuggerType(typeTerm: Term): Type = typeTerm match {
+    case Term_%(term, Ident("type")) =>
+      coqTypeToTreeHuggerType(term)
     case UncurriedTermApplication(genericTypeTerm, arguments) =>
       createTypeWithGenericParams(coqTypeToTreeHuggerType(genericTypeTerm), arguments.map {
         case Argument(_, typeTerm) => coqTypeToTreeHuggerType(typeTerm)
@@ -212,9 +431,36 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
       case _ =>
         (List[Argument](), arguments)
     }
-    curryingStrategy.createApplication(
-      convertFunctionTermToTreeHuggerAst(functionTerm, typeArguments),
-      valueArguments.map(convertValueArgumentToTreeHuggerAst))
+    val convertedArguments = valueArguments.map(convertValueArgumentToTreeHuggerAst)
+    functionTerm match {
+      case Qualid(List(Ident(name))) if nativeFullConstructors &&
+        localConstructorValueArity.contains(name) =>
+        if (exactNumerics && (name == "O" || name == "S"))
+          throw new IllegalStateException("Exact natural constructor is shadowed locally: " + name)
+        if (typeArguments.nonEmpty)
+          throw new IllegalStateException("Native constructor has unsupported explicit type arguments: " + name)
+        val arity = localConstructorValueArity(name)
+        if (arity != convertedArguments.size)
+          throw new IllegalStateException("Local constructor requires all value arguments: " + name)
+        NEW(name, convertedArguments: _*)
+      case _ =>
+        curryingStrategy.createApplication(
+          convertFunctionTermToTreeHuggerAst(functionTerm, typeArguments),
+          convertedArguments)
+    }
+  }
+
+  private def createTotalNatDivision(numerator: Term, denominator: Term): Tree = {
+    val numeratorName = "scallinaNatNumerator"
+    val denominatorName = "scallinaNatDenominator"
+    val zero = REF("BigInt") APPLY LIT("0")
+    val body = IF(REF(denominatorName).INFIX("==").APPLY(zero))
+      .THEN(zero)
+      .ELSE(REF(numeratorName).INFIX("/").APPLY(REF(denominatorName)))
+    val params = List(numeratorName, denominatorName).map(name =>
+      mkTreeFromDefStart(PARAM(name, TYPE_REF("BigInt"))))
+    val lambda = NoCurrying.createAnonymousFunction(params, body)
+    PAREN(lambda).APPLY(List(termToTreeHuggerAst(numerator), termToTreeHuggerAst(denominator)))
   }
 
   private def convertFunctionTermToTreeHuggerAst(functionTerm: Term, typeArguments: List[Argument] = List[Argument]()) = {
@@ -240,11 +486,11 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
      */
     case Argument(None, BetweenParenthesis(argValue)) => termToTreeHuggerAst(argValue) // remove parenthesis since they are not needed in Scala
     case Argument(None, argValue)                     => termToTreeHuggerAst(argValue)
-    case Argument(Some(Ident(argName)), argValue)     => REF(argName) := termToTreeHuggerAst(argValue)
+    case Argument(Some(Ident(argName)), argValue)     => REF(scalaIdentifier(argName)) := termToTreeHuggerAst(argValue)
   }
 
   private def createFieldSelection(recordInstance: Term, fieldName: String) = {
-    termToTreeHuggerAst(recordInstance).DOT(fieldName)
+    termToTreeHuggerAst(recordInstance).DOT(scalaIdentifier(fieldName))
   }
 
   private def convertToScalaInfixOperator(coqOp: String): String = coqOp match {
@@ -286,17 +532,27 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
     // TODO (Joseph Bakouny): Leon "Nil" lists are written like this "Nil()" in pattern matches, check how to support this
     case "nil"          => "Nil"
     case "pair"         => "Tuple2"
-    case anyOtherString => anyOtherString
+    case anyOtherString => scalaIdentifier(anyOtherString)
   }
 
+  private def scalaIdentifier(name: String): String =
+    if (name.contains("'"))
+      primedScalaNames.getOrElse(name,
+        throw new IllegalStateException("Primed identifier missing from source: " + name))
+    else name
+
   private def convertType(inputType: String): String = inputType match {
+    case "unit" if exactNumerics && !localTypeNames.contains("unit") &&
+      !locallyDefinedNames.contains("unit") => "Unit"
+    case "positive" if exactNumerics && !localTypeNames.contains("positive") => "BigInt"
+    case "N" | "nat" | "Z" if exactNumerics => "BigInt"
     case "Z"            => "BigInt"
     case "nat"          => "Nat"
     case "list"         => "List"
     case "option"       => "Option"
     case "string"       => "String"
     case "bool"         => "Boolean"
-    case anyOtherString => anyOtherString
+    case anyOtherString => caseInsensitiveTypeRenames.getOrElse(anyOtherString, anyOtherString)
   }
 
   private def createAnonymousFunction(binders: Binders, bodyTerm: Term) = {
@@ -306,10 +562,10 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
           name match {
             case Name(Some(Ident(nameString))) =>
               optionalTypeTerm.fold {
-                PARAM(nameString)
+                PARAM(scalaIdentifier(nameString))
               } {
                 (typeTerm: Term) =>
-                  PARAM(nameString, coqTypeToTreeHuggerType(typeTerm))
+                  PARAM(scalaIdentifier(nameString), coqTypeToTreeHuggerType(typeTerm))
               }
             case Name(None) => PARAM(WILDCARD)
           }))
@@ -330,12 +586,12 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
   private def createTypeAliasDefinition(id: Ident, binders: Option[Binders]) = {
     val typeParams = convertTypeBindersToTypeVars(binders)
     val Ident(nameString) = id
-    TYPEVAR(nameString).withTypeParams(typeParams)
+    TYPEVAR(scalaIdentifier(nameString)).withTypeParams(typeParams)
   }
 
   private def createDefinition(id: Ident, binders: Option[Binders], typeTerm: Option[Term]): DefTreeStart = {
     val Ident(definitionName) = id
-    val declaration = createParameterlessDefinition(definitionName, typeTerm)
+    val declaration = createParameterlessDefinition(scalaIdentifier(definitionName), typeTerm)
 
     binders.fold(declaration) {
       binders =>
@@ -381,7 +637,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
       }
 
     val parentDeclaration: Tree =
-      CLASSDEF(parentName)
+      CLASSDEF(caseInsensitiveTypeRenames.getOrElse(parentName, parentName))
         .withTypeParams(covariantParentTypeDefs)
         .withFlags(Flags.SEALED)
         .withFlags(Flags.ABSTRACT)
@@ -390,15 +646,32 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
     val caseClassHierarchy: List[Tree] =
       indBodyItems flatMap {
         case InductiveBodyItem(Ident(name), binders, indBodyItemType) =>
+          def arrowArguments(term: Term): (List[Term], Term) = term match {
+            case Term_->(argument, result) =>
+              val (remaining, returnType) = arrowArguments(result)
+              (argument :: remaining, returnType)
+            case returnType => (Nil, returnType)
+          }
+
+          val (constructorBinders, constructorReturnType) = (binders, indBodyItemType) match {
+            case (None, Some(arrow: Term_->)) =>
+              val (arguments, returnType) = arrowArguments(arrow)
+              val generatedBinders = arguments.zipWithIndex.map { case (argument, index) =>
+                ExplicitBinderWithType(List(Name(Some(Ident("arg" + (index + 1))))), argument)
+              }
+              (Some(Binders(generatedBinders)), Some(returnType))
+            case _ => (binders, indBodyItemType)
+          }
+
           // If a simple return type was explicitely specified, use it!
-          val returnTypeIndBodyItem = indBodyItemType.map {
+          val returnTypeIndBodyItem = constructorReturnType.map {
             case genericApplication @ (UncurriedTermApplication(_, _) | ExplicitQualidApplication(_, _)) =>
               coqTypeToTreeHuggerType(genericApplication)
             case anythingElse =>
               throw new IllegalStateException("Unsupported inductive body return type:" + anythingElse.toCoqCode)
           }
 
-          binders.fold {
+          constructorBinders.fold {
             val caseObjectDeclaration: Tree =
               CASEOBJECTDEF(name)
                 .withParents(
@@ -411,7 +684,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
                     //-> ignore specific return type and add Nothing instead of generics
                     // Note that, to ensure correctness:
                     // Scallina prohibits GADTs from having parent binders (top-level parameters)
-                    createTypeWithGenericParams(parentName, covariantParentTypeDefs.map(_ => TYPE_REF("Nothing"))))
+                    createTypeWithGenericParams(TYPE_REF(caseInsensitiveTypeRenames.getOrElse(parentName, parentName)), covariantParentTypeDefs.map(_ => TYPE_REF("Nothing"))))
                 .tree
 
             List(caseObjectDeclaration)
@@ -426,7 +699,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
                   .withParams(paramsDefs)
                   .withParents(
                     returnTypeIndBodyItem.fold(
-                      createTypeWithGenericParams(parentName, parentTypeDefs.map(typeVar => TYPE_REF(typeVar.name)))
+                      createTypeWithGenericParams(TYPE_REF(caseInsensitiveTypeRenames.getOrElse(parentName, parentName)), parentTypeDefs.map(typeVar => TYPE_REF(typeVar.name)))
                     // No return type was specified, generate it from the environment
                     )(
                         x => x // A return type was explicitly specified, keep it as it is => this could serve for GADTs
@@ -434,7 +707,10 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
                   .tree
 
               val optionalCompanion =
-                curryingStrategy.createCompanionObject(name, parentTypeDefs ::: typeDefs, paramsDefs)
+                if (nativeFullConstructors && curryingStrategy == Currify)
+                  None
+                else
+                  curryingStrategy.createCompanionObject(name, parentTypeDefs ::: typeDefs, paramsDefs)
 
               caseClassDeclaration ::
                 optionalCompanion.fold[List[Tree]](Nil)(o => List(o))
@@ -467,10 +743,14 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
     // TODO (Joseph Bakouny): Should we take currying into consideration ?
     for {
       ExplicitBinderWithType(names, typeTerm) <- valueBinders
-      // TODO (Joseph Bakouny): Should we ignore names with the pattern "Name(None)"?
-      Name(Some(Ident(nameString))) <- names
+      name <- names
     } yield {
-      mkTreeFromDefStart(PARAM(nameString, coqTypeToTreeHuggerType(typeTerm)))
+      name match {
+        case Name(Some(Ident(nameString))) =>
+          mkTreeFromDefStart(PARAM(scalaIdentifier(nameString), coqTypeToTreeHuggerType(typeTerm)))
+        case Name(None) =>
+          mkTreeFromDefStart(PARAM(nextIgnoredBinderName(), coqTypeToTreeHuggerType(typeTerm)))
+      }
     }
 
   private def partitionParams(binders: Binders): (List[TypeDefTreeStart], List[ValDef]) = {
@@ -542,7 +822,9 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
     def convertPatternMatch(patternMatch: Match) = {
       // TODO(Joseph Bakouny): Check if the return type of the match should always be ignored
       val Match(matchItems, _, equations) = patternMatch
-      convertTuple(matchItems, convertMatchItem).MATCH(equations.map(convertPatternEquation))
+      val cases = if (exactNumerics) equations.flatMap(convertPatternEquationExpanded)
+      else equations.map(convertPatternEquation)
+      convertTuple(matchItems, convertMatchItem).MATCH(cases)
     }
 
     def convertPattern(coqPattern: Pattern): Tree = coqPattern match {
@@ -554,6 +836,10 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
       case InfixPattern(head, "::", tail)        => convertPattern(head) UNLIST_:: (convertPattern(tail))
       case ConstructorPattern(constructor, args) => termToTreeHuggerAst(constructor).UNAPPLY(args.map(convertPattern))
       case QualidPattern(q)                      => termToTreeHuggerAst(q)
+      case ListPattern(elements) =>
+        if (!listNotationAvailable)
+          throw new IllegalStateException("List pattern used before importing ListNotations")
+        elements.foldRight(REF("Nil"): Tree)((element, tail) => convertPattern(element) UNLIST_:: tail)
       case UnderscorePattern                     => WILDCARD
       /*
        * TODO (Joseph Bakouny): Handle Nats in pattern position correctly
@@ -569,7 +855,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
     def convertNameToPatternVar(name: Name) =
       name match {
         case Name(None)            => WILDCARD
-        case Name(Some(Ident(id))) => ID(id)
+        case Name(Some(Ident(id))) => ID(scalaIdentifier(id))
       }
 
     private def convertMatchItem(matchItem: MatchItem): Tree = matchItem match {
@@ -583,6 +869,12 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy) {
         CASE(
           multPatterns.map(convertMultPattern).reduce(_ OR_PATTERN _)) ==> termToTreeHuggerAst(outputTerm)
       }
+
+    private def convertPatternEquationExpanded(patternEquation: PatternEquation): List[CaseDef] = {
+      val PatternEquation(multPatterns, outputTerm) = patternEquation
+      val body = termToTreeHuggerAst(outputTerm)
+      multPatterns.map(pattern => CASE(convertMultPattern(pattern)) ==> body)
+    }
 
     private def convertMultPattern(multPattern: MultPattern): Tree = {
       val MultPattern(patterns) = multPattern

@@ -10,6 +10,7 @@ import scala.of.coq.parsercombinators.parser.DepRetType
 import scala.of.coq.parsercombinators.parser.ExplicitBinderWithType
 import scala.of.coq.parsercombinators.parser.ForAll
 import scala.of.coq.parsercombinators.parser.Fun
+import scala.of.coq.parsercombinators.parser.ListLiteral
 import scala.of.coq.parsercombinators.parser.Ident
 import scala.of.coq.parsercombinators.parser.ImplicitBinder
 import scala.of.coq.parsercombinators.parser.LetConstructorArgsIn
@@ -530,8 +531,90 @@ class CoqTermParserTest extends FunSuite {
     CoqTermParser("3 =? 7") should parse(InfixOperator(Number(3), "=?", Number(7)))
   }
 
+  test("""Testing "value mod 16" """) {
+    CoqTermParser("value mod 16") should parse(
+      InfixOperator(Qualid(List(Ident("value"))), "mod", Number(16)))
+  }
+
+  test("""Testing "left && right" """) {
+    CoqTermParser("left && right") should parse(
+      InfixOperator(Qualid(List(Ident("left"))), "&&", Qualid(List(Ident("right")))))
+  }
+
+  test("""Testing "left || right" """) {
+    CoqTermParser("left || right") should parse(
+      InfixOperator(Qualid(List(Ident("left"))), "||", Qualid(List(Ident("right")))))
+  }
+
+  test("empty list notation is an explicit term") {
+    CoqTermParser("[]") should parse(ListLiteral(List()))
+  }
+
+  test("nonempty list notation retains element order") {
+    CoqTermParser("[1; 2]") should parse(ListLiteral(List(Number(1), Number(2))))
+  }
+
+  test("boolean conjunction binds more tightly than disjunction") {
+    CoqTermParser("false && true || true") should parse(
+      InfixOperator(
+        InfixOperator(Qualid(List(Ident("false"))), "&&", Qualid(List(Ident("true")))),
+        "||",
+        Qualid(List(Ident("true")))))
+  }
+
+  test("explicit parentheses preserve lower-precedence disjunction") {
+    CoqTermParser("false && (true || true)") should parse(
+      InfixOperator(
+        Qualid(List(Ident("false"))),
+        "&&",
+        BetweenParenthesis(InfixOperator(
+          Qualid(List(Ident("true"))), "||", Qualid(List(Ident("true")))))))
+  }
+
   test("""Testing "x :: xs" """) {
     CoqTermParser("x :: xs") should parse(InfixOperator(Qualid(List(Ident("x"))), "::", Qualid(List(Ident("xs")))))
+  }
+
+  test("""Testing "left ++ right" """) {
+    CoqTermParser("left ++ right") should parse(
+      InfixOperator(Qualid(List(Ident("left"))), "++", Qualid(List(Ident("right")))))
+  }
+
+  test("list literal append to a qualified application") {
+    val magnitude = Qualid(List(Ident("magnitude")))
+    val positive = UncurriedTermApplication(
+      Qualid(List(Ident("N"), Ident("pos"))), List(Argument(None, magnitude)))
+    val bytes = UncurriedTermApplication(
+      Qualid(List(Ident("u64_bytes"))), List(Argument(None, BetweenParenthesis(positive))))
+    CoqTermParser("[45] ++ u64_bytes (N.pos magnitude)") should parse(
+      InfixOperator(ListLiteral(List(Number(45))), "++", bytes))
+  }
+
+  test("primed Rocq identifier") {
+    CoqTermParser("count'") should parse(Qualid(List(Ident("count'"))))
+  }
+
+  test("match with a primed binder and numeric scope") {
+    assert(CoqTermParser("match count with O => 2 | S count' => 2 + count' end%nat").successful)
+  }
+
+  test("application with consecutive list literal arguments") {
+    val result = CoqTermParser(
+      "plan_compare_groups (plan_compare_budget left right) [CursorPlan left] [CursorPlan right]")
+    assert(result.successful, result.toString)
+  }
+
+  test("application binds tighter than unparenthesized addition") {
+    val lengthOfEscaped = UncurriedTermApplication(
+      Qualid(List(Ident("length"))),
+      List(Argument(None, Qualid(List(Ident("escaped"))))))
+    CoqTermParser("length escaped + size") should parse(
+      InfixOperator(lengthOfEscaped, "+", Qualid(List(Ident("size")))))
+    CoqTermParser("length (escaped + size)") should parse(
+      UncurriedTermApplication(
+        Qualid(List(Ident("length"))),
+        List(Argument(None, BetweenParenthesis(InfixOperator(
+          Qualid(List(Ident("escaped"))), "+", Qualid(List(Ident("size")))))))))
   }
 
   test(""" Testing

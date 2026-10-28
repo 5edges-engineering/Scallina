@@ -51,6 +51,11 @@ case class ScopeCommand(scopeName: Qualid, isLocal: Boolean, openOrClose: String
   def toCoqCode: String = (if (isLocal) "Local" else "") + openOrClose + "Scope " + scopeName.toCoqCode + "."
 }
 
+case object BindNotationCommand extends Sentence {
+  def toCoqCode: String =
+    "Notation \"x <- r ;; f\" := (bind r (fun x => f)) (at level 100, r at next level, right associativity)."
+}
+
 /*
  * TODO (Joseph Bakouny): Add [Local] keyword and "Let" production to Definition in subsequent versions
  */
@@ -212,6 +217,10 @@ case class InductiveBodyItem(id: Ident, binders: Option[Binders], typeTerm: Opti
 // Start of term
 sealed trait Term extends CoqAST
 
+case class ListLiteral(elements: List[Term]) extends Term {
+  def toCoqCode: String = elements.map(_.toCoqCode).mkString("[", "; ", "]")
+}
+
 case class ForAll(binders: Binders, term: Term) extends Term {
   def toCoqCode: String = "forall " + binders.toCoqCode + ", " + term.toCoqCode
 }
@@ -219,6 +228,10 @@ case class ForAll(binders: Binders, term: Term) extends Term {
 case class Fun(binders: Binders, term: Term) extends Term {
   def toCoqCode: String =
     "fun " + binders.toCoqCode + " => " + term.toCoqCode
+}
+
+case class BindNotationUse(variable: Name, received: Term, body: Term) extends Term {
+  def toCoqCode: String = variable.toCoqCode + " <- " + received.toCoqCode + " ;; " + body.toCoqCode
 }
 
 case class Fix(fixBodies: FixBodies) extends Term {
@@ -514,6 +527,10 @@ case class MultPattern(patterns: List[Pattern]) extends CoqAST {
 
 // Start of Pattern
 sealed trait Pattern extends CoqAST
+
+case class ListPattern(elements: List[Pattern]) extends Pattern {
+  def toCoqCode: String = elements.map(_.toCoqCode).mkString("[", "; ", "]")
+}
 
 //TODO (Joseph Bakouny): Consider a more elegant representation of infix patterns
 /*
