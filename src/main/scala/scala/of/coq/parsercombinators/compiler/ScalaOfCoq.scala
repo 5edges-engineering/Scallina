@@ -320,6 +320,16 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
         List(Argument(None, transform), Argument(None, values)))
         if exactNumerics && importsStdlibList && !locallyDefinedNames.contains("map") =>
       termToTreeHuggerAst(values).DOT("map").APPLY(termToTreeHuggerAst(transform))
+    case UncurriedTermApplication(Qualid(List(Ident("repeat"))),
+        List(Argument(None, value), Argument(None, count)))
+        if exactNumerics && importsStdlibList && !locallyDefinedNames.contains("repeat") =>
+      REF("scala.of.coq.exact.ExactList.repeat")
+        .APPLY(termToTreeHuggerAst(value)).APPLY(termToTreeHuggerAst(count))
+    case UncurriedTermApplication(Qualid(List(Ident(operation @ ("firstn" | "skipn")))),
+        List(Argument(None, count), Argument(None, values)))
+        if exactNumerics && importsStdlibList && !locallyDefinedNames.contains(operation) =>
+      REF("scala.of.coq.exact.ExactList." + operation)
+        .APPLY(termToTreeHuggerAst(count)).APPLY(termToTreeHuggerAst(values))
     case UncurriedTermApplication(Qualid(List(Ident(fieldName))), List(Argument(None, recordValue)))
         if exactNumerics && localRecordProjectionNames.contains(fieldName) =>
       termToTreeHuggerAst(recordValue).DOT(scalaIdentifier(fieldName))

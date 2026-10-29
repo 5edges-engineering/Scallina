@@ -318,6 +318,48 @@ Definition second_values (values : list (nat * nat)) : list nat := map snd value
     assert(output.contains("values.map(snd)"))
   }
 
+  test("imported List repetition and slices keep exact natural counts") {
+    val output = generate("""From Stdlib Require Import List.
+Definition duplicate (value count : nat) : list nat := repeat value count.
+Definition prefix (count : nat) (values : list nat) : list nat := firstn count values.
+Definition suffix (count : nat) (values : list nat) : list nat := skipn count values.""")
+    assert(output.contains("scala.of.coq.exact.ExactList.repeat(value)(count)"))
+    assert(output.contains("scala.of.coq.exact.ExactList.firstn(count)(values)"))
+    assert(output.contains("scala.of.coq.exact.ExactList.skipn(count)(values)"))
+  }
+
+  test("exact List helpers do not narrow large slice counts") {
+    val values = List(BigInt(3), BigInt(5))
+    val beyondInt = BigInt(Int.MaxValue) + 1
+    assert(scala.of.coq.exact.ExactList.repeat(BigInt(7))(BigInt(3)) ==
+      List(BigInt(7), BigInt(7), BigInt(7)))
+    assert(scala.of.coq.exact.ExactList.firstn(beyondInt)(values) == values)
+    assert(scala.of.coq.exact.ExactList.skipn(beyondInt)(values).isEmpty)
+    assert(scala.of.coq.exact.ExactList.firstn(BigInt(1))(values) == List(BigInt(3)))
+    assert(scala.of.coq.exact.ExactList.skipn(BigInt(1))(values) == List(BigInt(5)))
+    intercept[IllegalArgumentException] {
+      scala.of.coq.exact.ExactList.repeat(BigInt(7))(beyondInt)
+    }
+    intercept[IllegalArgumentException] {
+      scala.of.coq.exact.ExactList.firstn(BigInt(-1))(values)
+    }
+    intercept[IllegalArgumentException] {
+      scala.of.coq.exact.ExactList.skipn(BigInt(-1))(values)
+    }
+  }
+
+  test("local or unqualified List names retain their own bindings") {
+    val local = generate("""From Stdlib Require Import List.
+Definition firstn (count : nat) (values : list nat) : list nat := values.
+Definition call (count : nat) (values : list nat) : list nat := firstn count values.""")
+    val unqualified = generate("""Require Import List.
+Definition call (value count : nat) : list nat := repeat value count.""")
+    assert(local.contains("firstn(count, values)"))
+    assert(!local.contains("ExactList.firstn"))
+    assert(unqualified.contains("repeat(value, count)"))
+    assert(!unqualified.contains("ExactList.repeat"))
+  }
+
   test("imported Nat comparisons and maximum use exact integers") {
     val output = generateCurried("""From Stdlib Require Import PeanoNat.
 Definition below (left right : nat) : bool := Nat.ltb left right.
