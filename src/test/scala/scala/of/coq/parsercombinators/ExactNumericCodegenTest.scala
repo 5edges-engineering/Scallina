@@ -175,6 +175,20 @@ Definition integer_to_nat (value : Z) : nat := Z.to_nat value.""")
     intercept[IllegalArgumentException] { scala.of.coq.exact.ExactZ.ofNat(BigInt(-1)) }
   }
 
+  test("N.to_uint produces the standard structural decimal representation") {
+    val output = generate("""From Stdlib Require Import NArith Decimal.
+Definition decimal_digits (value : N) : Decimal.uint := N.to_uint value.""")
+    assert(output.contains("scala.of.coq.exact.ExactN.toUint(value)"))
+    import scala.of.coq.exact.Decimal
+    assert(scala.of.coq.exact.ExactN.toUint(BigInt(0)) == Decimal.D0(Decimal.Nil))
+    assert(scala.of.coq.exact.ExactN.toUint(BigInt(10)) == Decimal.D1(Decimal.D0(Decimal.Nil)))
+    assert(scala.of.coq.exact.ExactN.toUint(BigInt(123)) ==
+      Decimal.D1(Decimal.D2(Decimal.D3(Decimal.Nil))))
+    assert(scala.of.coq.exact.ExactN.toUint(BigInt(100)) ==
+      Decimal.D1(Decimal.D0(Decimal.D0(Decimal.Nil))))
+    intercept[IllegalArgumentException] { scala.of.coq.exact.ExactN.toUint(BigInt(-1)) }
+  }
+
   test("standard Z comparisons lower to exact BigInt comparisons") {
     val output = generate("""From Stdlib Require Import ZArith.
 Definition integer_le (left right : Z) : bool := Z.leb left right.
