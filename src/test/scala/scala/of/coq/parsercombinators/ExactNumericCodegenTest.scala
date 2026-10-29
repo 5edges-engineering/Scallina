@@ -7,6 +7,12 @@ import scala.of.coq.parsercombinators.compiler.ScalaOfCoq
 import scala.of.coq.parsercombinators.parser.CoqParser
 
 class ExactNumericCodegenTest extends FunSuite {
+  test("CLI rejects failed source parsing rather than returning error text as generated code") {
+    intercept[IllegalArgumentException] {
+      scala.of.coq.Main.requireSuccessfulParse(CoqParser("Definition invalid := ."))
+    }
+  }
+
   test("optional Peano import omission is parsed explicitly") {
     val (options, files) = scala.of.coq.Main.parseCommandLineArgs(
       List("--exact-numerics", "--omit-peano-import", "Example.v"))
@@ -129,6 +135,35 @@ Definition done : unit := tt.""")
   test("Z subtraction remains signed") {
     val output = generate("Definition sub_z (left right : Z) : Z := (left - right)%Z.")
     assert(output == "def sub_z(left: BigInt, right: BigInt): BigInt = (left - right)")
+  }
+
+  test("Z.of_N preserves arbitrary-size N exactly and rejects invalid negative inputs") {
+    val output = generate("From Stdlib Require Import NArith ZArith. Definition lift (value : N) : Z := Z.of_N value.")
+    assert(output == "def lift(value: BigInt): BigInt = scala.of.coq.exact.ExactZ.ofN(value)")
+    val large = BigInt("184467440737095516160000000000000000000")
+    assert(scala.of.coq.exact.ExactZ.ofN(large) == large)
+    intercept[IllegalArgumentException] {
+      scala.of.coq.exact.ExactZ.ofN(BigInt(-1))
+    }
+  }
+
+  test("a scoped unary minus around Z.of_N lowers both branches exactly") {
+    val output = generate("""From Stdlib Require Import Bool NArith ZArith.
+Definition signed_count (negative : bool) (count : N) : Z :=
+  if negative then (- Z.of_N count)%Z else Z.of_N count.""")
+    assert(output.contains("if (negative) (BigInt(\"0\") - scala.of.coq.exact.ExactZ.ofN(count))"))
+    assert(output.contains("else scala.of.coq.exact.ExactZ.ofN(count)"))
+  }
+
+  test("unary minus in Z scope remains exact") {
+    val output = generate("Definition negate (value : Z) : Z := (- value)%Z.")
+    assert(output == "def negate(value: BigInt): BigInt = (BigInt(\"0\") - value)")
+  }
+
+  test("unary minus in natural scope fails closed") {
+    intercept[IllegalStateException] {
+      generate("Definition invalid (value : nat) : nat := (- value)%nat.")
+    }
   }
 
   test("N division by a positive literal uses exact BigInt") {

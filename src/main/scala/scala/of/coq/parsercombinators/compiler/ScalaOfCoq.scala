@@ -20,6 +20,7 @@ import scala.of.coq.parsercombinators.parser.Inductive
 import scala.of.coq.parsercombinators.parser.InductiveBody
 import scala.of.coq.parsercombinators.parser.InductiveBodyItem
 import scala.of.coq.parsercombinators.parser.InfixOperator
+import scala.of.coq.parsercombinators.parser.UnaryMinus
 import scala.of.coq.parsercombinators.parser.MatchItem
 import scala.of.coq.parsercombinators.parser.Name
 import scala.of.coq.parsercombinators.parser.Number
@@ -281,6 +282,9 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
         List(Argument(None, value))) if exactNumerics && importsStdlibNArith =>
       REF("scala.of.coq.exact.ExactN." + (if (conversion == "of_nat") "ofNat" else "pos"))
         .APPLY(termToTreeHuggerAst(value))
+    case UncurriedTermApplication(Qualid(List(Ident("Z"), Ident("of_N"))),
+        List(Argument(None, value))) if exactNumerics && importsStdlibZArith && importsStdlibNArith =>
+      REF("scala.of.coq.exact.ExactZ.ofN").APPLY(termToTreeHuggerAst(value))
     case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident(operation @ ("ltb" | "leb" | "eqb")))),
         List(Argument(None, left), Argument(None, right)))
         if exactNumerics && importsStdlibPeanoNat =>
@@ -310,6 +314,12 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
       termToTreeHuggerAst(recordValue).DOT(scalaIdentifier(fieldName))
     case UncurriedTermApplication(functionTerm, arguments) =>
       createApplication(functionTerm, arguments)
+    case UnaryMinus(value) if exactNumerics && effectiveNumericScope.contains("Z") =>
+      (REF("BigInt") APPLY LIT("0")).INFIX("-").APPLY(termToTreeHuggerAst(value))
+    case UnaryMinus(_) if exactNumerics =>
+      throw new IllegalStateException("Exact unary minus requires Z scope")
+    case UnaryMinus(value) =>
+      LIT(0).INFIX("-").APPLY(termToTreeHuggerAst(value))
     case InfixOperator(leftOp, op @ ("/" | "mod"), Number(divisor))
         if exactNumerics && effectiveNumericScope.contains("N") && divisor > 0 =>
       createInfixOperator(leftOp, op, Number(divisor))

@@ -3,11 +3,16 @@ package scala.of.coq
 import scala.of.coq.parsercombinators.parser.CoqTermParser
 import scala.of.coq.parsercombinators.lexer.CoqLexer
 import scala.of.coq.parsercombinators.parser.CoqParser
+import scala.of.coq.parsercombinators.parser.Sentence
 import scala.of.coq.parsercombinators.compiler.ScalaOfCoq
 import scala.of.coq.parsercombinators.compiler.NoCurrying
 import scala.of.coq.parsercombinators.compiler.Currify
 
 object Main {
+  private[coq] def requireSuccessfulParse(result: CoqParser.ParseResult[List[Sentence]]): Unit = {
+    if (!result.successful) throw new IllegalArgumentException(result.toString)
+  }
+
   val usage = """
     Usage: scala target/scala-2.11/scallina-assembly-<scallina-version>.jar [--uncurrify] [--exact-numerics] [--native-full-constructors] [--omit-peano-import] [--source] [--trim] [--ast] [--lexer] [--coq] <coq-source-file-1.v> ... <coq-source-file-n.v>
   """
@@ -62,6 +67,7 @@ object Main {
         }
 
         val coqAST = CoqParser(inputString)
+        requireSuccessfulParse(coqAST)
         val optionalCoqAst = Option(coqAST.getOrElse(null))
 
         val outputString = optionalCoqAst.fold(coqAST.toString) {

@@ -49,12 +49,26 @@ import scala.of.coq.parsercombinators.parser.LetFixIn
 import scala.of.coq.parsercombinators.parser.FixBody
 import scala.of.coq.parsercombinators.parser.FixAnnotation
 import scala.of.coq.parsercombinators.parser.InfixOperator
+import scala.of.coq.parsercombinators.parser.UnaryMinus
 import scala.of.coq.parsercombinators.parser.TupleValue
 import scala.of.coq.parsercombinators.parser.SimpleProjection
 import scala.of.coq.parsercombinators.parser.ApplicationProjection
 import scala.of.coq.parsercombinators.parser.ExplicitApplicationProjection
 
 class CoqTermParserTest extends FunSuite {
+
+  test("unary minus parses before application and preserves parentheses") {
+    CoqTermParser("- value") should parse(UnaryMinus(Qualid(List(Ident("value")))))
+    CoqTermParser("- Z.of_N count") should parse(UnaryMinus(UncurriedTermApplication(
+      Qualid(List(Ident("Z"), Ident("of_N"))),
+      List(Argument(None, Qualid(List(Ident("count"))))))))
+    CoqTermParser("(- Z.of_N count)%Z") should parse(Term_%(BetweenParenthesis(
+      UnaryMinus(UncurriedTermApplication(Qualid(List(Ident("Z"), Ident("of_N"))),
+        List(Argument(None, Qualid(List(Ident("count")))))))), Ident("Z")))
+    CoqTermParser("- (left + right)") should parse(
+      UnaryMinus(BetweenParenthesis(InfixOperator(
+        Qualid(List(Ident("left"))), "+", Qualid(List(Ident("right")))))))
+  }
 
   test("""Testing "forall a, (a -> a)" """) {
     CoqTermParser("forall a, (a -> a)") should parse(

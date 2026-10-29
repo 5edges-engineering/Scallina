@@ -282,6 +282,8 @@ object CoqParser extends StandardTokenParsers with PackratParsers {
       | term_:>
       | term_->
       | explicitQualidApplication
+      | parenthesizedScope
+      | unaryMinus
       | termApplication
       | term_%
       | infixOperatorTerm
@@ -304,6 +306,13 @@ object CoqParser extends StandardTokenParsers with PackratParsers {
     protected def termApplication: P[UncurriedTermApplication]
 
     protected def infixOperatorTerm: P[InfixOperator] = infixOperator
+
+    private lazy val parenthesizedScope: P[Term_%] =
+      ("(" ~> Term.term <~ ")") ~ ("%" ~> identifier) ^^ {
+        case inner ~ scope => Term_%(BetweenParenthesis(inner), scope)
+      }
+
+    protected def unaryMinus: P[UnaryMinus]
 
     private lazy val bindNotationUse: P[Term] =
       (identifier ^^ (id => Name(Some(id))) | "_" ^^^ Name(None)) ~ "<-" ~ term ~ ";" ~ ";" ~ term ^^ {
@@ -482,6 +491,9 @@ object CoqParser extends StandardTokenParsers with PackratParsers {
 
   private object Term extends AbstractTerm {
 
+    override protected lazy val unaryMinus: P[UnaryMinus] =
+      "-" ~> (termApplication | parenthesis | numberLiteral | qualid) ^^ { UnaryMinus(_) }
+
     override protected lazy val termApplication: P[UncurriedTermApplication] =
       term ~ (argument +) ^^ { case term ~ arguments => UncurriedTermApplication(term, arguments) }
 
@@ -491,6 +503,7 @@ object CoqParser extends StandardTokenParsers with PackratParsers {
   }
 
   private object TermWithoutApplication extends AbstractTerm {
+    override protected lazy val unaryMinus: P[UnaryMinus] = failure("unary minus requires parentheses in application arguments")
     override protected lazy val termApplication: P[UncurriedTermApplication] = failure("termApplication is not a valid production for the object CoqParser.TermWithoutApplication")
     override protected lazy val infixOperatorTerm: P[InfixOperator] = failure("infix operators require parentheses in application arguments")
   }

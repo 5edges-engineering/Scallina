@@ -333,6 +333,10 @@ case class InfixOperator(leftOperand: Term, operator: String, rightOperand: Term
   def toCoqCode: String = leftOperand.toCoqCode + " " + operator + " " + rightOperand.toCoqCode
 }
 
+case class UnaryMinus(operand: Term) extends Term {
+  def toCoqCode: String = "- " + operand.toCoqCode
+}
+
 case class Match(matchItems: List[MatchItem], returnType: Option[ReturnType], equations: List[PatternEquation]) extends Term {
   def toCoqCode: String =
     "match " + matchItems.map(_.toCoqCode).mkString(" , ") + returnType.fold("")(" " + _.toCoqCode) + " with\n" +

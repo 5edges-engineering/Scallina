@@ -4,6 +4,11 @@ package scala.of.coq.exact
 object ExactZ {
   val Z0: BigInt = BigInt(0)
 
+  def ofN(value: BigInt): BigInt = {
+    require(value >= 0, "Rocq N cannot be negative")
+    value
+  }
+
   object Zpos {
     def apply(magnitude: BigInt): BigInt = ExactN.pos(magnitude)
     def unapply(value: BigInt): Option[BigInt] =
