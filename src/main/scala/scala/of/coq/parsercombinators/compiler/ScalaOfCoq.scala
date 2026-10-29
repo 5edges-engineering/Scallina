@@ -85,6 +85,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
 
   def createObjectFileCode(objectName: String): String = {
     "import scala.of.coq.lang._\n" +
+      (if (exactNumerics && importsStdlibDecimal) "import scala.of.coq.exact.Decimal\n" else "") +
       (if (omitPeanoImport) "" else "import Nat._\n") +
       "import Pairs._\n" +
       "import Bools._\n" +
@@ -164,6 +165,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
   private val importsStdlibPeanoNat = importsStdlib("PeanoNat")
   private val importsStdlibNArith = importsStdlib("NArith")
   private val importsStdlibZArith = importsStdlib("ZArith")
+  private val importsStdlibDecimal = importsStdlib("Decimal")
   private var bindNotationAvailable = false
   private var listNotationAvailable = false
   private var activeNumericScope: Option[String] = None

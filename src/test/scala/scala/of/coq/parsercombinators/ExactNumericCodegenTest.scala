@@ -360,6 +360,34 @@ Definition call (value count : nat) : list nat := repeat value count.""")
     assert(!unqualified.contains("ExactList.repeat"))
   }
 
+  test("imported Decimal uint constructors retain their structural representation") {
+    val source = """From Stdlib Require Import Decimal.
+Definition digit_code (digits : Decimal.uint) : nat :=
+  match digits with
+  | Decimal.Nil => 0
+  | Decimal.D0 tail => 48
+  | Decimal.D1 tail => 49
+  | Decimal.D2 tail => 50
+  | Decimal.D3 tail => 51
+  | Decimal.D4 tail => 52
+  | Decimal.D5 tail => 53
+  | Decimal.D6 tail => 54
+  | Decimal.D7 tail => 55
+  | Decimal.D8 tail => 56
+  | Decimal.D9 tail => 57
+  end."""
+    val output = new ScalaOfCoq(CoqParser(source).get, Currify, exactNumerics = true,
+      omitPeanoImport = true).createObjectFileCode("DecimalPatternOnly")
+    assert(output.contains("import scala.of.coq.exact.Decimal"))
+    assert(output.contains("digits: Decimal.uint"))
+    assert(output.contains("case Decimal.Nil"))
+    assert(output.contains("case Decimal.D0(tail)"))
+    assert(output.contains("case Decimal.D9(tail)"))
+    val defaultOutput = new ScalaOfCoq(CoqParser(source).get, Currify)
+      .createObjectFileCode("DecimalPatternOnly")
+    assert(!defaultOutput.contains("import scala.of.coq.exact.Decimal"))
+  }
+
   test("imported Nat comparisons and maximum use exact integers") {
     val output = generateCurried("""From Stdlib Require Import PeanoNat.
 Definition below (left right : nat) : bool := Nat.ltb left right.
