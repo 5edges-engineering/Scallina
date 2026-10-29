@@ -283,7 +283,7 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
       REF("scala.of.coq.exact.ExactN." + (if (conversion == "of_nat") "ofNat" else "pos"))
         .APPLY(termToTreeHuggerAst(value))
     case UncurriedTermApplication(Qualid(List(Ident("Z"), Ident("of_N"))),
-        List(Argument(None, value))) if exactNumerics && importsStdlibZArith && importsStdlibNArith =>
+        List(Argument(None, value))) if exactNumerics && importsStdlibZArith =>
       REF("scala.of.coq.exact.ExactZ.ofN").APPLY(termToTreeHuggerAst(value))
     case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident(operation @ ("ltb" | "leb" | "eqb")))),
         List(Argument(None, left), Argument(None, right)))

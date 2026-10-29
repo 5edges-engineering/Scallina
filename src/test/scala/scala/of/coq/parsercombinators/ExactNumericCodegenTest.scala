@@ -147,6 +147,11 @@ Definition done : unit := tt.""")
     }
   }
 
+  test("ZArith alone makes Z.of_N available for exact lowering") {
+    val output = generate("From Stdlib Require Import ZArith. Definition lift (value : N) : Z := Z.of_N value.")
+    assert(output == "def lift(value: BigInt): BigInt = scala.of.coq.exact.ExactZ.ofN(value)")
+  }
+
   test("a scoped unary minus around Z.of_N lowers both branches exactly") {
     val output = generate("""From Stdlib Require Import Bool NArith ZArith.
 Definition signed_count (negative : bool) (count : N) : Z :=
