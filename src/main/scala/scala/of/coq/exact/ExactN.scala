@@ -16,6 +16,13 @@ object ExactN {
     value
   }
 
+  def toNat(value: BigInt): BigInt = {
+    require(value >= 0, "Rocq N cannot be negative")
+    value
+  }
+
+  def size(value: BigInt): BigInt = BigInt(toNat(value).bitLength)
+
   def pos(value: BigInt): BigInt = {
     require(value > 0, "Rocq positive must be greater than zero")
     value

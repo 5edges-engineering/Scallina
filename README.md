@@ -34,3 +34,5 @@ For a practical example, see the ```compile-scala-code.sh``` script in [```packa
 The source code of the Scallina Standard Library is available under [```src/main/resources/scala/of/coq/lang```](./src/main/resources/scala/of/coq/lang/).
 
 With `--exact-numerics`, `--omit-peano-import` removes the generated `import Nat._` line. Use it only when the generated program compiles without the Peano `Nat` helper; the option does not rewrite uses of that helper or remove other runtime dependencies. The default output is unchanged.
+
+For explicit `From Stdlib Require Import NArith` and `ZArith` sources, exact numeric output also lowers `N.size`, `N.to_nat`, `Z.of_N`, `Z.of_nat`, `Z.to_nat`, `Z.leb`, and `Z.ltb` to `BigInt` operations or checked helpers. The helpers reject negative values where Rocq expects `N` or `nat`; `Z.to_nat` maps negative integers to zero. These conversions do not make arbitrary Rocq libraries extractable: compile the generated Scala with its required language helpers and test the resulting behavior.

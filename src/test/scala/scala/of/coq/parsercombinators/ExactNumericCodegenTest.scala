@@ -152,6 +152,37 @@ Definition done : unit := tt.""")
     assert(output == "def lift(value: BigInt): BigInt = scala.of.coq.exact.ExactZ.ofN(value)")
   }
 
+  test("standard N and Z conversions use exact nonnegative boundaries") {
+    val naturalOutput = generate("""From Stdlib Require Import NArith.
+Definition natural_size (value : N) : N := N.size value.
+Definition natural_to_nat (value : N) : nat := N.to_nat value.""")
+    val integerOutput = generate("""From Stdlib Require Import ZArith.
+Definition integer_of_nat (value : nat) : Z := Z.of_nat value.
+Definition integer_to_nat (value : Z) : nat := Z.to_nat value.""")
+    assert(naturalOutput.contains("scala.of.coq.exact.ExactN.size(value)"))
+    assert(naturalOutput.contains("scala.of.coq.exact.ExactN.toNat(value)"))
+    assert(integerOutput.contains("scala.of.coq.exact.ExactZ.ofNat(value)"))
+    assert(integerOutput.contains("scala.of.coq.exact.ExactZ.toNat(value)"))
+    val large = BigInt(1) << 128
+    assert(scala.of.coq.exact.ExactN.size(BigInt(0)) == BigInt(0))
+    assert(scala.of.coq.exact.ExactN.size(large) == BigInt(129))
+    assert(scala.of.coq.exact.ExactN.toNat(large) == large)
+    assert(scala.of.coq.exact.ExactZ.ofNat(large) == large)
+    assert(scala.of.coq.exact.ExactZ.toNat(BigInt(-5)) == BigInt(0))
+    assert(scala.of.coq.exact.ExactZ.toNat(large) == large)
+    intercept[IllegalArgumentException] { scala.of.coq.exact.ExactN.size(BigInt(-1)) }
+    intercept[IllegalArgumentException] { scala.of.coq.exact.ExactN.toNat(BigInt(-1)) }
+    intercept[IllegalArgumentException] { scala.of.coq.exact.ExactZ.ofNat(BigInt(-1)) }
+  }
+
+  test("standard Z comparisons lower to exact BigInt comparisons") {
+    val output = generate("""From Stdlib Require Import ZArith.
+Definition integer_le (left right : Z) : bool := Z.leb left right.
+Definition integer_lt (left right : Z) : bool := Z.ltb left right.""")
+    assert(output.contains("def integer_le(left: BigInt, right: BigInt): Boolean = left <= right"))
+    assert(output.contains("def integer_lt(left: BigInt, right: BigInt): Boolean = left < right"))
+  }
+
   test("a scoped unary minus around Z.of_N lowers both branches exactly") {
     val output = generate("""From Stdlib Require Import Bool NArith ZArith.
 Definition signed_count (negative : bool) (count : N) : Z :=

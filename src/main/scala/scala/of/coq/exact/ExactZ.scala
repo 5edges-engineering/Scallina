@@ -9,6 +9,10 @@ object ExactZ {
     value
   }
 
+  def ofNat(value: BigInt): BigInt = ExactN.ofNat(value)
+
+  def toNat(value: BigInt): BigInt = value.max(BigInt(0))
+
   object Zpos {
     def apply(magnitude: BigInt): BigInt = ExactN.pos(magnitude)
     def unapply(value: BigInt): Option[BigInt] =

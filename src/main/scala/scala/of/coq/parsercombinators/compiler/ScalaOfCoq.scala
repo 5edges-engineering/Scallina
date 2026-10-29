@@ -282,9 +282,20 @@ class ScalaOfCoq(coqTrees: List[Sentence], curryingStrategy: CurryingStrategy, e
         List(Argument(None, value))) if exactNumerics && importsStdlibNArith =>
       REF("scala.of.coq.exact.ExactN." + (if (conversion == "of_nat") "ofNat" else "pos"))
         .APPLY(termToTreeHuggerAst(value))
+    case UncurriedTermApplication(Qualid(List(Ident("N"), Ident(conversion @ ("size" | "to_nat")))),
+        List(Argument(None, value))) if exactNumerics && importsStdlibNArith =>
+      REF("scala.of.coq.exact.ExactN." + (if (conversion == "size") "size" else "toNat"))
+        .APPLY(termToTreeHuggerAst(value))
     case UncurriedTermApplication(Qualid(List(Ident("Z"), Ident("of_N"))),
         List(Argument(None, value))) if exactNumerics && importsStdlibZArith =>
       REF("scala.of.coq.exact.ExactZ.ofN").APPLY(termToTreeHuggerAst(value))
+    case UncurriedTermApplication(Qualid(List(Ident("Z"), Ident(conversion @ ("of_nat" | "to_nat")))),
+        List(Argument(None, value))) if exactNumerics && importsStdlibZArith =>
+      REF("scala.of.coq.exact.ExactZ." + (if (conversion == "of_nat") "ofNat" else "toNat"))
+        .APPLY(termToTreeHuggerAst(value))
+    case UncurriedTermApplication(Qualid(List(Ident("Z"), Ident(operation @ ("leb" | "ltb")))),
+        List(Argument(None, left), Argument(None, right))) if exactNumerics && importsStdlibZArith =>
+      createInfixOperator(left, if (operation == "leb") "<=" else "<", right)
     case UncurriedTermApplication(Qualid(List(Ident("Nat"), Ident(operation @ ("ltb" | "leb" | "eqb")))),
         List(Argument(None, left), Argument(None, right)))
         if exactNumerics && importsStdlibPeanoNat =>
